@@ -1,0 +1,237 @@
+<!DOCTYPE aesl-source>
+<network>
+
+
+<!--list of global events-->
+
+
+<!--list of constants-->
+<constant value="0" name="STOPPED"/>
+<constant value="1" name="LEFT"/>
+<constant value="2" name="RIGHT"/>
+<constant value="300" name="EDGE"/>
+<constant value="440" name="TARGET"/>
+<constant value="3" name="LOST"/>
+<constant value="4" name="RETREIVER"/>
+<constant value="5" name="BLOCKED"/>
+<constant value="2500" name="FRONT_THRESHOLD"/>
+<constant value="2000" name="OUTSIDE_THRESHOLD"/>
+<constant value="2500" name="DIFF"/>
+<constant value="6" name="LEFT_TURNING"/>
+<constant value="7" name="RIGHT_TURNING"/>
+<constant value="305" name="TURN_SPEED"/>
+<constant value="205" name="MIN_SPEED"/>
+<constant value="250" name="ADJUST_SPEED"/>
+
+
+<!--show keywords state-->
+<keywords flag="true"/>
+
+
+<!--node thymio-II-->
+<node nodeId="1" name="thymio-II">#*  File: Hurdles.aesl
+	Team: E8
+	Date: 23 March, 2022
+*#
+
+#variables
+var state = STOPPED  
+var delta = -1
+var left = 0
+var right = 0                        
+var count = 0 
+var turn_speed = 0
+var exactly_one = 0
+var i
+var max
+var min
+var avg
+
+#initialization
+motor.left.target = 0                        # reset motors
+motor.right.target = 0
+call leds.circle(0,0,0,0,0,0,0,0)
+
+onevent button.forward                       # on forward button press
+  state = RIGHT                               
+
+onevent button.left                      # on backward button press
+  call leds.circle(0,0,0,0,0,0,0,0)			
+  state = STOPPED                            # transition to STOPPED state
+  motor.left.target = 0                      # stop motors
+  motor.right.target = 0
+	
+onevent prox                              
+  if state != STOPPED then                   # if robot is moving
+  	# if moving left and not sensing black line
+  	if state == RIGHT and  prox.ground.delta[1] >= EDGE then
+      state = LEFT                          
+      motor.left.target = 0             
+      motor.right.target = TARGET	# move right
+      timer.period[0] = 2000 
+    end
+    
+    # if moving left and sensing black line or turning and sensing line
+    if (state == LEFT or state == LEFT_TURNING or state == RIGHT_TURNING) and (delta != 1)  and (prox.ground.delta[1] &lt; EDGE or prox.ground.delta[0] &lt; EDGE) then
+      state = RIGHT                           
+      timer.period[0] = 0
+      motor.left.target = TARGET	# move left
+      motor.right.target = 0
+    end    
+    
+    #if lost 
+    if state == LOST and prox.ground.delta[1] &lt; EDGE then
+    		state = RETREIVER
+    end
+    
+    #find the line again
+    if state == RETREIVER and prox.ground.delta[1] >= EDGE then
+    	state = LEFT                          
+      	motor.left.target = 0             #  move 
+      	motor.right.target = TARGET/2
+    end
+   
+	# object detection - as long as one of the sensors cross the thresholds 
+    if (state != LEFT_TURNING and state != RIGHT_TURNING and state != LOST and state != RETREIVER) and (prox.horizontal[0] > OUTSIDE_THRESHOLD or prox.horizontal[2] > FRONT_THRESHOLD or prox.horizontal[1] > OUTSIDE_THRESHOLD or prox.horizontal[3] > OUTSIDE_THRESHOLD or prox.horizontal[4] > OUTSIDE_THRESHOLD) then 
+       	state = BLOCKED
+    	motor.right.target = 0
+    	motor.left.target = 0
+    end
+    
+    #after stopping read the barcode
+    if state == BLOCKED then
+    	callsub Read
+    end
+    
+    #left turn 
+    if state == LEFT_TURNING then
+    	callsub leftTurn
+    end
+    
+    #right turn
+    if state == RIGHT_TURNING then
+    	callsub rightTurn
+    end
+  end
+ 
+# failure recovery   
+onevent timer0
+	if state == LEFT and prox.ground.delta[1] >= EDGE then
+		state = LOST
+		timer.period[0] = 0
+		motor.left.target = 0            
+      	motor.right.target = -350
+	end
+
+#barcode reader
+sub Read
+	exactly_one = 0
+	count = 0
+	delta = 0
+	
+	#code to check how many sensors are non zero
+	for i in 0:4 do
+		if prox.horizontal[i] > 0 then
+			exactly_one += 1
+		end
+	end
+	
+	#call math.stat(prox.horizontal, min, max, avg)
+	#if only 1 has non zero value then move closer 
+	if exactly_one == 1 then
+		if prox.horizontal[2] > 0 then
+			motor.left.target = ADJUST_SPEED
+		    motor.right.target = ADJUST_SPEED
+		elseif prox.horizontal[1] > 0 or prox.horizontal[4] > 0 then 
+			state = LEFT_TURNING 
+		elseif prox.horizontal[3] > 0 or prox.horizontal[0] > 0 then
+			state = RIGHT_TURNING	
+		end
+
+	#if one side sees more than other
+	elseif prox.horizontal[1] > prox.horizontal[3] or prox.horizontal[0] > prox.horizontal[4] then
+		#if tilted very heavily go to the heavier side
+		if prox.horizontal[1] > prox.horizontal[2] and prox.horizontal[2] != 0 then
+			state = LEFT_TURNING
+			right = 0
+			left = 32
+		#if tilted and one side does not see anything
+		elseif prox.horizontal[2] &lt; FRONT_THRESHOLD or (prox.horizontal[3] == 0 and prox.horizontal[4] == 0) then
+			state = RIGHT_TURNING
+			right = 32
+			left = 0 
+		# else its about centered so go to heavier side
+		else
+			state = LEFT_TURNING
+			right = 0
+			left = 32
+		end
+	elseif prox.horizontal[3] > prox.horizontal[1] or prox.horizontal[4] > prox.horizontal[0] then
+		#if tilted very heavily go to the heavier side
+		if prox.horizontal[3] > prox.horizontal[2] and prox.horizontal[2] != 0 then
+			state = RIGHT_TURNING
+			right = 32
+			left = 0
+		#if tilted and one side does not see anything
+		elseif prox.horizontal[1] != 0 and prox.horizontal[2] &lt; OUTSIDE_THRESHOLD or (prox.horizontal[0] == 0 and prox.horizontal[1] == 0) then
+			state = LEFT_TURNING
+			right = 0
+			left = 32
+		# else its about centered so go to heavier side
+		else
+			state = RIGHT_TURNING
+			right = 32
+			left = 0
+		end
+	end
+	call leds.circle(0,0,right,0,0,0,left,0)
+
+sub leftTurn	
+	#if too close go far
+	if prox.horizontal[0] > 3500 then
+		motor.left.target = TARGET
+		motor.right.target = -TARGET
+	end		
+	#if nothing in direction go there
+	if prox.horizontal[3] == 0 and prox.horizontal[4] == 0 and prox.horizontal[2] == 0 and count == 1 then
+		delta = 2
+		motor.left.target = TARGET
+		motor.right.target = turn_speed	
+		if turn_speed > MIN_SPEED then
+			turn_speed = turn_speed - 7
+		end
+	#if something in direction turn away
+	else 
+		delta = 1
+		motor.left.target = -TARGET
+		motor.right.target = TARGET
+		count = 1
+		turn_speed = TURN_SPEED
+	end
+
+
+sub rightTurn
+	#if too close go far
+	if prox.horizontal[4] > 3500 then
+		motor.left.target = TARGET
+		motor.right.target = -TARGET
+	end
+	#if nothing in direction go there
+	if prox.horizontal[0] == 0 and prox.horizontal[1] == 0 and prox.horizontal[2] == 0 and count == 1 then
+		delta = 2
+		motor.left.target = turn_speed
+		motor.right.target = TARGET
+		if turn_speed > MIN_SPEED then
+			turn_speed = turn_speed - 7
+		end
+	#if something in direction turn away
+	else
+		delta = 1
+		motor.left.target = TARGET
+		motor.right.target = -TARGET
+		count = 1
+		turn_speed = TURN_SPEED
+	end</node>
+
+
+</network>
